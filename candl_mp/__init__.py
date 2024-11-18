@@ -1,5 +1,6 @@
 from montepython.likelihood_class import Likelihood
 import candl
+from jax import value_and_grad
 import numpy as np
 from io_mp import dictitems
 import importlib
@@ -91,3 +92,39 @@ class candl_mp(Likelihood):
 
         logl = self.candl_like.log_like(pars_for_like)
         return logl
+
+    def loglkl_and_grad(self, cosmo, data):
+        # Grab theory Cls, convert to right units and shuffle dict keys
+        class_Cls = self.get_cl(cosmo)
+        like_Cls = {"ell": class_Cls["ell"][2 : self.candl_like.ell_max + 1]}
+        for ky in class_Cls:
+            if ky != "ell":
+
+                # Catch lensing spectra and account for their unique normalisation convention
+                if ky == "pp":
+                    like_Cls[ky] = (class_Cls[ky] * ((class_Cls["ell"] * (class_Cls["ell"] + 1))**2.0)/(2.0*np.pi))[2 : self.candl_like.ell_max + 1]
+                    like_Cls["kk"] = like_Cls["pp"]*np.pi/2.0
+                    continue
+
+                # Handle primary CMB
+                like_Cls[ky.upper()] = (
+                    class_Cls[ky]
+                    * class_Cls["ell"]
+                    * (class_Cls["ell"] + 1.0)
+                    / (2.0 * np.pi)
+                )
+                like_Cls[ky.upper()] = like_Cls[ky.upper()][2 : self.candl_like.ell_max + 1]
+
+        # Grab all parameter values
+        pars_for_like = {}
+        for key, value in dictitems(data.mcmc_parameters):
+            pars_for_like[key] = value["current"] * value["scale"]
+
+        # Deal with tau renaming
+        pars_for_like["tau"] = pars_for_like["tau_reio"]
+
+        # Hand off to like
+        pars_for_like["Dl"] = like_Cls
+
+        loglkl_vg = value_and_grad(self.candl_like.log_like)
+        return loglkl_vg(pars_for_like)
